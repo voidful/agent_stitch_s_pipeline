@@ -109,12 +109,57 @@ def strip_json_fence(text):
     return stripped
 
 
+def parse_patch_json(raw_text):
+    """
+    寬容地解析模型輸出的 patch JSON:
+    1. 去掉 markdown code fence（含沒有閉合的 fence）。
+    2. 直接 json.loads。
+    3. 失敗時抽出最外層 {...}，並嘗試修掉 trailing comma。
+    """
+    text = strip_json_fence(raw_text)
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        candidate = text[start:end + 1]
+        for fixer in (lambda t: t, lambda t: re.sub(r",\s*([}\]])", r"\1", t)):
+            try:
+                return json.loads(fixer(candidate))
+            except Exception:
+                continue
+    # 讓呼叫端拿到原始錯誤訊息。
+    return json.loads(text)
+
+
 def clean_say_text(text):
     if text is None:
         return ""
     text = str(text).strip()
     text = re.sub(r"</?SAY>", "", text).strip()
     return text
+
+
+# Rewriter 後設語言：private_state 應該是 agent 本人的思考，
+# 出現這些詞代表模型在討論「被給定的資料」而不是入戲思考，直接丟棄。
+META_LEAKAGE_RE = re.compile(
+    r"tool_steps|reference_answer|maintain\s+fidelity|as\s+instructed|rewriter|patch\s+json|the\s+input\s+json",
+    re.IGNORECASE,
+)
+
+
+def patch_meta_leakage(patch):
+    fields = [patch.get("final_private_state", ""), patch.get("first_say", ""), patch.get("final_say", "")]
+    for step in patch.get("steps") or []:
+        if isinstance(step, dict):
+            fields.append(step.get("pre_tool_private_state", ""))
+            fields.append(step.get("post_tool_say", ""))
+    return any(META_LEAKAGE_RE.search(str(f) or "") for f in fields)
 
 
 def clean_private_state(text):
@@ -290,19 +335,31 @@ def canonicalize_row(row):
         "steps_compact": [],
         "available_tools": available_tools,
         "tool_steps": [],
-        "final_answer_hint": ""
+        "final_answer_hint": "",
+        "context": [],
     }
-    
+
     step_id = 0
     pending_tool_calls = []
     pending_tool_calls_by_id = {}
-    
+
     for msg in msgs:
         role = msg.get("role")
         raw_content = msg.get("content", "")
         content = normalize_text_content(raw_content)
-        
+
         if role == "user":
+            # 多輪對話：較早輪次的 user 訊息保留到 context，
+            # user_request 永遠是最後一則 user 訊息。
+            if canonical["user_request"]:
+                canonical["context"].append(
+                    {"role": "user", "content": compact_observation(canonical["user_request"], 800)}
+                )
+                if canonical["final_answer_hint"]:
+                    canonical["context"].append(
+                        {"role": "assistant", "content": compact_observation(canonical["final_answer_hint"], 800)}
+                    )
+                    canonical["final_answer_hint"] = ""
             canonical["user_request"] = content
         elif role == "assistant":
             # 取得 tool_calls
@@ -407,6 +464,7 @@ def build_user_payload(row):
     payload = {
         "id": row["id"],
         "source": row["source"],
+        "context": loads_json_field(row.get("context_json"), []),
         "user": row["user_request"],
         "available_tools": available_tools,
         # Prompt only needs compact observations to write SAY/SOPR patches.
@@ -462,7 +520,10 @@ def preprocess(row):
     user_payload = build_user_payload(row)
     prompt_tokens_estimate = estimate_prompt_tokens(SYSTEM_PROMPT) + estimate_prompt_tokens(user_payload)
     prompt_tokens_estimate += CHAT_TEMPLATE_TOKEN_OVERHEAD
-    desired_max_tokens = min(MAX_OUTPUT_TOKENS, 1024 + num_steps * 384)
+    # translated_user 會把整段 user 訊息翻譯回吐，長 user 訊息需要等比例的輸出預算，
+    # 否則 JSON 會被 max_tokens 截斷。
+    translation_tokens = estimate_prompt_tokens(row.get("user_request", ""))
+    desired_max_tokens = min(MAX_OUTPUT_TOKENS, 1024 + num_steps * 384 + translation_tokens)
     available_max_tokens = MAX_MODEL_LEN - prompt_tokens_estimate - PROMPT_TOKEN_SAFETY_MARGIN
     estimated_max_tokens = max(MIN_OUTPUT_TOKENS, min(desired_max_tokens, available_max_tokens))
     
@@ -482,7 +543,9 @@ def preprocess(row):
             {"role": "user", "content": user_payload},
         ],
         "sampling_params": {
-            "temperature": 0.2,
+            # 0.2 made every bridge SAY collapse into the same stock sentence across
+            # the dataset; the eval judge penalizes that as template-like speech.
+            "temperature": float(os.environ.get("GENERATE_TEMPERATURE", "0.6")),
             "top_p": 0.95,
             "max_tokens": estimated_max_tokens,
             "stop": ["\n\n<END_PATCH>"],
@@ -518,7 +581,7 @@ def assemble_agent_stitch_s(canonical_row, raw_patch_str):
     將 Gemma 生成的 Patch 與原始 Trajectory 進行確定性組裝 (Deterministic Assembly)。
     """
     try:
-        patch = json.loads(strip_json_fence(raw_patch_str))
+        patch = parse_patch_json(raw_patch_str)
     except Exception as e:
         # JSON 解析失敗，返回空或標記錯誤
         return {
@@ -530,6 +593,12 @@ def assemble_agent_stitch_s(canonical_row, raw_patch_str):
     if patch.get("drop_reason"):
         return {
             "drop_reason": patch["drop_reason"],
+            "linear_target": None,
+        }
+
+    if patch_meta_leakage(patch):
+        return {
+            "drop_reason": "rewriter_meta_leakage",
             "linear_target": None,
         }
     
@@ -816,6 +885,18 @@ def run_pipeline(input_parquet_dir, output_sft_dir, only_ids_path=None):
     print("Assembling final SFT targets...")
     
     def process_patch_row(row):
+        # 當 should_continue_on_error=True 時，engine 失敗的 row 會帶著
+        # __inference_error__ 直接繞過 postprocess，因此沒有 raw_patch 欄位。
+        inference_error = str(row.get("__inference_error__") or "")
+        if inference_error or "raw_patch" not in row:
+            return {
+                "id": row.get("id"),
+                "status": "dropped",
+                "drop_reason": "inference_error",
+                "raw_patch": None,
+                "error": inference_error or "Row bypassed postprocess without raw_patch.",
+                "sft_data": None,
+            }
         canonical_row = {
             "id": row["id"],
             "source": row["source"],

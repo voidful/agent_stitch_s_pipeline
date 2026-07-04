@@ -17,6 +17,7 @@ For ONE turn of a conversation you receive a JSON object:
 {
   "id": "...",
   "source": "...",
+  "context": [{"role": "user|assistant", "content": "earlier turns of this conversation, oldest first; may be empty"}],
   "user": "the CURRENT user message you must respond to (may be in ANY language)",
   "available_tools": [{"name": "...", "description": "..."}],
   "tool_steps": [
@@ -38,7 +39,8 @@ Your job: produce a STITCH-S patch for THIS turn. You write the spoken chunks (<
 - You do NOT output the tool calls or tool results themselves in the patch JSON. You only write the speech and private reasoning chunks around them.
 - You must align your output `steps` list exactly 1-to-1 with the input `steps` list.
 - The `tool_steps` you see are compact summaries for writing the patch. The original full tool calls and results will be restored later by deterministic assembly.
-- Before writing any speech, check whether each provided tool_step is relevant to the current user request and grounded in the user request, conversation context, metadata, or any previous tool result. If a tool call is clearly unrelated, hallucinated, or based on an entity/URL/location/account/product/date not provided by those sources, do NOT make it sound natural. Set `drop_reason` to `"irrelevant_or_hallucinated_tool_step"` and keep the speech/private-state fields empty.
+- Before writing any speech, check whether each provided tool_step is relevant to the current user request and grounded in the user request, conversation context (`context`), metadata, or any previous tool result. If a tool call is clearly unrelated, hallucinated, or based on an entity/URL/location/account/product/date not provided by those sources, do NOT make it sound natural. Set `drop_reason` to `"irrelevant_or_hallucinated_tool_step"` and keep the speech/private-state fields empty.
+- If the CURRENT user message is only a closing acknowledgement (e.g. "謝謝", "太棒了", "thanks") with no new request, and the tool_steps do not serve that message (they belong to work already finished in `context`), the turn cannot form a coherent speak-while-acting trajectory. Set `drop_reason` to `"irrelevant_or_hallucinated_tool_step"`.
 
 ## Core idea
 
@@ -79,6 +81,7 @@ Each <SAY> must feel like it belongs to THIS specific conversation, not a generi
 - The user can see the full text output, so <SAY> does NOT need to read every detail aloud. Mention only the information that helps the user follow progress or understand the answer.
 - The final `final_say` should be a spoken summary of the answer, not a direct line-by-line translation of `reference_answer`. Keep the meaning and key outcome, but say it naturally and simply.
 - Vary phrasing across chunks; avoid repeating the same stock sentence. Keep every <SAY> easy for TTS to read aloud: 2-3 short sentences, no padding.
+- Within one turn, no two <SAY> chunks may open with the same words. Rotate sentence structures: sometimes lead with the progress ("第一步已經確認好了..."), sometimes with the next action ("接下來我幫您查..."), sometimes with a light acknowledgement of the wait ("這個查詢需要一點時間..."). Never fall back to a fixed template like "我現在幫您查一下" for every bridge.
 
 ## Spoken style for SAY chunks (strict)
 
@@ -93,6 +96,18 @@ Every <SAY> chunk is spoken text, not a markdown document.
 - If several items must be mentioned, write them as natural spoken prose using connectors such as "首先", "接著", "再來", "另外", "最後", "同時", and "如果需要".
 - When a file path, ID, product name, price, number, or code identifier is truly necessary in <SAY>, keep it as plain text without backticks or Markdown, and keep the spoken form as short as the task allows.
 - Final SAY chunks must sound like a fluent voice response, not a form, receipt, checklist, or written support ticket. Prefer concise, direct spoken summaries over exhaustive details.
+
+## Private reasoning quality ([SOPR] chunks, important)
+
+Each private_state is the agent THINKING WHILE SPEAKING. It must carry real decision content, not boilerplate:
+
+- steps[0].pre_tool_private_state: parse the request into concrete slots/constraints taken from the user message, then name the first tool and why it is the right first step.
+- steps[i>0].pre_tool_private_state: START from what the PREVIOUS observation actually showed, in one telegraphic clause with the concrete values that matter (e.g. "search returned 3 flights, cheapest $214 dep 09:10"), then note what is still missing or uncertain, then the next action and why.
+- final_private_state: pull together the specific facts from the observations that the final answer relies on (numbers, names, statuses, errors), plus any residual uncertainty or caveat that final_say should mention.
+- Style: telegraphic English notes ("need X; got Y; next: call Z with date=..."), never prose paragraphs, never generic filler like "I need to call the tool to get information".
+- STAY IN CHARACTER as the live agent. private_state is the agent's own thinking, so it must NEVER mention the rewriting setup: no "the input", "the provided tool_steps", "the reference answer", "the data", "maintain fidelity", "as instructed", or any hint that the tool calls were given to you. Think as if the agent decided each call itself.
+- Never paste tool JSON verbatim into private_state; extract only the decision-relevant fields.
+- If an observation contradicts the earlier expectation or returns an error/empty result, the NEXT private_state must visibly register that and adjust the plan.
 
 ## Description of the final assembled target; do not output directly.
 
@@ -165,12 +180,50 @@ Return valid JSON ONLY, exactly this shape (no markdown, no commentary):
 }
 
 Rules:
+- Output exactly ONE valid JSON object: double-quoted strings, no trailing commas, no code fences, no text before or after the JSON. Escape any internal double quotes and newlines inside string values.
+- `steps` must contain exactly one entry per input tool_steps entry, in the same order, with the same step_id. Never merge, skip, or add steps.
 - first_say must not mention facts that only appear in tool observations.
 - private_state must be compact, 20 to 60 words, in English.
-- post_tool_say must NOT reveal facts from the corresponding observation, because it is spoken before <TOOL_RESULT>.
+- steps[i].post_tool_say is spoken while step i's tool is still running: it must NOT reveal facts from step i's observation, but it MAY briefly reference results from steps before i, because those have already arrived.
 - final_private_state and final_say should synthesize the tool observations.
 - final_say must answer the user directly in natural spoken Traditional Chinese, summarizing the key point instead of directly translating every detail.
 - No <SAY> field may contain Markdown, bullets, numbered-list formatting, headings, tables, blockquotes, inline code backticks, or emoji.
 - When listing multiple points in <SAY>, use natural spoken connectors like "首先", "接著", "再來", and "最後" instead of list markers.
 - If the trajectory is malformed, impossible to rewrite, or contains tool_steps that are clearly irrelevant or hallucinated relative to the current user request, set drop_reason and keep other fields empty.
+
+## Mini example (illustrative only — copy the SHAPE and the causality discipline, not the content)
+
+Input (abridged):
+
+{
+  "user": "Check if flight AA100 tomorrow is on time, and if it is, book me an aisle seat.",
+  "tool_steps": [
+    {"step_id": 0, "tool_name": "flight_status", "tool_call_brief": "{\"function\":{\"name\":\"flight_status\",\"arguments\":{\"flight\":\"AA100\",\"date\":\"2025-03-02\"}}}", "observation_brief": "{\"status\":\"on_time\",\"departure\":\"09:15\"}"},
+    {"step_id": 1, "tool_name": "book_seat", "tool_call_brief": "{\"function\":{\"name\":\"book_seat\",\"arguments\":{\"flight\":\"AA100\",\"pref\":\"aisle\"}}}", "observation_brief": "{\"ok\":true,\"seat\":\"12C\"}"}
+  ],
+  "reference_answer": "AA100 is on time, departing 09:15. I booked aisle seat 12C for you."
 }
+
+Output:
+
+{
+  "translated_user": "幫我確認明天 AA100 航班是不是準點，如果準點的話，幫我訂一個靠走道的座位。",
+  "first_say": "好的，我先幫您確認明天 AA100 的航班狀態。如果一切準點，我就接著幫您安排靠走道的座位。",
+  "steps": [
+    {
+      "step_id": 0,
+      "pre_tool_private_state": "User wants AA100 status for tomorrow, then an aisle seat only if on time. Booking is conditional, so verify status first via flight_status before touching book_seat.",
+      "post_tool_say": "我正在查 AA100 明天的即時狀態，請稍等我一下。確認結果一出來，我就告訴您後續怎麼安排。"
+    },
+    {
+      "step_id": 1,
+      "pre_tool_private_state": "flight_status: on_time, departs 09:15. Condition met, proceed to book aisle seat on AA100 via book_seat; report seat number once confirmed.",
+      "post_tool_say": "好消息，航班目前顯示準點出發。我現在就幫您劃靠走道的座位，馬上就好。"
+    }
+  ],
+  "final_private_state": "AA100 on time, dep 09:15; booking ok, aisle seat 12C. Final answer covers both facts; no residual uncertainty.",
+  "final_say": "都幫您處理好了。AA100 明天準點起飛，出發時間是早上九點十五分，我也幫您訂到靠走道的 12C 座位，祝您旅途順利。",
+  "drop_reason": null
+}
+
+Note the causality: step 0's bridge never states the status because that result is still pending; step 1's bridge may say "準點" because step 0's result has already arrived, but never mentions seat 12C, which is still pending.

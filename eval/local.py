@@ -147,6 +147,27 @@ def error_score(error, raw_text=None, fallback_payload=None):
     )
 
 
+def normalize_scored_row(row):
+    """
+    當 should_continue_on_error=True 時，engine 失敗的 row 會帶著
+    __inference_error__ 直接繞過 postprocess，沒有 eval_scores。
+    這裡把它們還原成原始 row 並給 inference_error 分數，同時把
+    helper 欄位拿掉，保持輸出 schema 一致。
+    """
+    row = dict(row)
+    err = str(row.pop("__inference_error__", "") or "")
+    if "eval_scores" in row and not err:
+        return row
+    original_row = json.loads(row.get("row_json") or "{}")
+    score = error_score(
+        f"inference_error: {err or 'missing eval output'}",
+        None,
+        row.get("fallback_payload_json"),
+    )
+    original_row["eval_scores"] = json.dumps(score, ensure_ascii=False)
+    return original_row
+
+
 def postprocess(row):
     original_row = json.loads(row["row_json"])
     raw = row.get("generated_text") or row.get("response") or ""
@@ -228,7 +249,7 @@ def run_pipeline(input_path, output_dir, max_rows=None):
     processor = build_processor(config, preprocess=preprocess, postprocess=postprocess)
 
     print("Running local Gemma judge inference...")
-    scored_ds = processor(llm_input_ds).union(prompt_too_long_ds).materialize()
+    scored_ds = processor(llm_input_ds).map(normalize_scored_row).union(prompt_too_long_ds).materialize()
 
     run_output_dir = os.path.join(output_dir, "runs", run_id)
     scored_output_path = os.path.join(run_output_dir, "scored")

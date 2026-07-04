@@ -39,6 +39,11 @@ Local generation also estimates prompt length before inference. Rows over the lo
 
 Eval keeps all scored rows in `scored` and additionally writes filtered parquet views for `keep` and `review`. `reject` rows remain available in `scored`.
 
+Filtering that acts on the model's patch output and on engine failures
+(`irrelevant_or_hallucinated_tool_step`, `rewriter_meta_leakage`,
+`inference_error`, tolerant patch parsing, and multi-turn context handling) is
+documented in [docs/data_filtering.md](docs/data_filtering.md).
+
 ## Python Usage
 
 Generate only:
