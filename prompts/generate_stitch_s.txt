@@ -4,11 +4,11 @@ We are converting REAL multi-turn agentic conversations into STITCH-S-style traj
 
 ## Output language policy (read first)
 
-The target dataset is Traditional Chinese (zh-TW).
+The target dataset is English (en).
 
-- ALL user-visible spoken text is Traditional Chinese: the translated user question (`translated_user`) and every <SAY> chunk (the opening, every bridge, and the final one). If the input `user` or `reference_answer` is in English (or any other language), TRANSLATE it faithfully into natural Traditional Chinese. Translate meaning, not word-for-word; keep proper nouns, code, numbers, units, and tool names as-is.
+- ALL user-visible spoken text is English: the translated user question (`translated_user`) and every <SAY> chunk (the opening, every bridge, and the final one). If the input `user` or `reference_answer` is not in English, translate it faithfully into natural English. Translate meaning, not word-for-word; keep proper nouns, code, numbers, units, and tool names as-is.
 - ALL private reasoning ([SOPR] chunks) stays in English, telegraphic style. Do NOT translate it.
-- Use Traditional Chinese characters (台灣用語), never Simplified.
+- Use concise, natural spoken English suitable for a voice assistant.
 
 ## What you are given (input)
 
@@ -29,7 +29,7 @@ For ONE turn of a conversation you receive a JSON object:
     }
   ],
   "reference_answer": "the ground-truth assistant final answer for this turn (may be in ANY language)",
-  "language": "zh-TW"
+  "language": "en"
 }
 
 Your job: produce a STITCH-S patch for THIS turn. You write the spoken chunks (<SAY>) and the private reasoning chunks ([SOPR]...[EOPR]). You DO NOT invent or alter tool calls or tool results.
@@ -40,7 +40,7 @@ Your job: produce a STITCH-S patch for THIS turn. You write the spoken chunks (<
 - You must align your output `steps` list exactly 1-to-1 with the input `steps` list.
 - The `tool_steps` you see are compact summaries for writing the patch. The original full tool calls and results will be restored later by deterministic assembly.
 - Before writing any speech, check whether each provided tool_step is relevant to the current user request and grounded in the user request, conversation context (`context`), metadata, or any previous tool result. If a tool call is clearly unrelated, hallucinated, or based on an entity/URL/location/account/product/date not provided by those sources, do NOT make it sound natural. Set `drop_reason` to `"irrelevant_or_hallucinated_tool_step"` and keep the speech/private-state fields empty.
-- If the CURRENT user message is only a closing acknowledgement (e.g. "謝謝", "太棒了", "thanks") with no new request, and the tool_steps do not serve that message (they belong to work already finished in `context`), the turn cannot form a coherent speak-while-acting trajectory. Set `drop_reason` to `"irrelevant_or_hallucinated_tool_step"`.
+- If the CURRENT user message is only a closing acknowledgement (e.g. "thank you", "that's great", "thanks") with no new request, and the tool_steps do not serve that message (they belong to work already finished in `context`), the turn cannot form a coherent speak-while-acting trajectory. Set `drop_reason` to `"irrelevant_or_hallucinated_tool_step"`.
 
 ## Core idea
 
@@ -53,7 +53,7 @@ Your job: produce a STITCH-S patch for THIS turn. You write the spoken chunks (<
 ## Final trajectory markers (for understanding only; do not output directly)
 
 <SAY>
-User-visible Traditional Chinese speech. Natural, warm, helpful, and SPECIFIC to this conversation.
+User-visible English speech. Natural, warm, helpful, and SPECIFIC to this conversation.
 2-3 short sentences. TTS-friendly, conversational, and SPECIFIC to this conversation.
 </SAY>
 
@@ -81,19 +81,19 @@ Each <SAY> must feel like it belongs to THIS specific conversation, not a generi
 - The user can see the full text output, so <SAY> does NOT need to read every detail aloud. Mention only the information that helps the user follow progress or understand the answer.
 - The final `final_say` should be a spoken summary of the answer, not a direct line-by-line translation of `reference_answer`. Keep the meaning and key outcome, but say it naturally and simply.
 - Vary phrasing across chunks; avoid repeating the same stock sentence. Keep every <SAY> easy for TTS to read aloud: 2-3 short sentences, no padding.
-- Within one turn, no two <SAY> chunks may open with the same words. Rotate sentence structures: sometimes lead with the progress ("第一步已經確認好了..."), sometimes with the next action ("接下來我幫您查..."), sometimes with a light acknowledgement of the wait ("這個查詢需要一點時間..."). Never fall back to a fixed template like "我現在幫您查一下" for every bridge.
+- Within one turn, no two <SAY> chunks may open with the same words. Rotate sentence structures: sometimes lead with progress ("The first detail is confirmed..."), sometimes with the next action ("Next, I'll check..."), and sometimes with a light acknowledgement of the wait ("This lookup may take a moment..."). Never fall back to a fixed template like "I'm checking that now" for every bridge.
 
 ## Spoken style for SAY chunks (strict)
 
 Every <SAY> chunk is spoken text, not a markdown document.
 - Do NOT use Markdown formatting: no bold/italic markers, headings, tables, blockquotes, fenced code blocks, inline code backticks, or horizontal rules.
-- Do NOT use bullet lists or numbered-list formatting such as "- ...", "* ...", "1. ...", "2. ...", or Chinese list markers.
+- Do NOT use bullet lists or numbered-list formatting such as "- ...", "* ...", "1. ...", or "2. ...".
 - Do NOT use emoji, pictographs, or decorative symbols.
 - Do NOT write list-like spoken text such as "details are as follows", "first item", "second item", or a sequence of separate lines. If several facts matter, merge them into one or two smooth spoken sentences.
-- Do NOT include URLs, email addresses, raw API identifiers, or long account/payment/order IDs in <SAY> unless the user explicitly asks to hear them. Refer to them naturally instead, such as "這筆訂單", "您的 PayPal 帳戶", "剛才提供的 email", or "這個連結".
+- Do NOT include URLs, email addresses, raw API identifiers, or long account/payment/order IDs in <SAY> unless the user explicitly asks to hear them. Refer to them naturally instead, such as "this order", "your PayPal account", "the email you provided", or "that link".
 - Avoid parentheses, dense punctuation, slash-heavy phrases, long quoted passages, and other text that sounds awkward when read aloud.
 - Avoid reading long order numbers, transaction IDs, product IDs, payment IDs, confirmation codes, or item IDs repeatedly. If an identifier is necessary, mention it once in a short form, then refer to it conversationally.
-- If several items must be mentioned, write them as natural spoken prose using connectors such as "首先", "接著", "再來", "另外", "最後", "同時", and "如果需要".
+- If several items must be mentioned, write them as natural spoken prose using connectors such as "first", "next", "also", "finally", "at the same time", and "if needed".
 - When a file path, ID, product name, price, number, or code identifier is truly necessary in <SAY>, keep it as plain text without backticks or Markdown, and keep the spoken form as short as the task allows.
 - Final SAY chunks must sound like a fluent voice response, not a form, receipt, checklist, or written support ticket. Prefer concise, direct spoken summaries over exhaustive details.
 
@@ -144,15 +144,15 @@ them correctly.
 3. Between every <TOOL_CALL> and its <TOOL_RESULT> there MUST be at least one <SAY>.
 4. Every <TOOL_CALL> must be immediately preceded by a [SOPR] chunk that compactly states the immediate next action and why.
 5. Never reveal the final answer (the number, the name, the conclusion) in any <SAY> before the last <TOOL_RESULT> that supports it.
-6. Never reveal or paraphrase private_state content inside <SAY>. The two streams have different registers: <SAY> is conversational Traditional Chinese; private_state is telegraphic English notes.
+6. Never reveal or paraphrase private_state content inside <SAY>. The two streams have different registers: <SAY> is conversational spoken English; private_state is telegraphic English notes.
 7. Each <SAY>: 2-3 short sentences, contextual, TTS-friendly, and spoken-length. Each private_state: 20-60 words.
 8. [EOR] appears exactly once, immediately after the final [EOPR]. No [SOPR] and no <TOOL_CALL> after it.
 9. The number of tool calls equals len(tool_steps)
-10. Do NOT fabricate or alter tool calls or tool results. The final answer must be derivable from those tool results and must agree with `reference_answer`. You render `reference_answer` into a natural Traditional Chinese spoken closing — summarize the key answer in speech, not a direct translation or exhaustive reading, and do not contradict it or add unsupported facts. If `reference_answer` is EMPTY (a tool-only turn with no ground-truth text), synthesize the final answer yourself in Traditional Chinese, grounded ONLY in the tool results above and the user's request — briefly say what was found or accomplished; never invent facts beyond the tool results.
+10. Do NOT fabricate or alter tool calls or tool results. The final answer must be derivable from those tool results and must agree with `reference_answer`. Render `reference_answer` as a natural English spoken closing—summarize the key answer in speech, not a direct translation or exhaustive reading, and do not contradict it or add unsupported facts. If `reference_answer` is EMPTY (a tool-only turn with no ground-truth text), synthesize the final answer yourself in English, grounded ONLY in the tool results above and the user's request—briefly say what was found or accomplished; never invent facts beyond the tool results.
 11. Tool results may contradict the assistant's initial expectation. When the provided result naturally differs from a reasonable first guess, let the following [SOPR] and <SAY> visibly update. Do not force this when the data does not support it.
 12. If a provided result is {"ok": false, ...} or signals an error, acknowledge it briefly in the next <SAY> and recover with a caveated answer based on what is available.
 13. The final <SAY> must answer the user directly and mention residual uncertainty if any exists.
-14. Language: the translated user question and every <SAY> (opening, bridges, final) are ALWAYS Traditional Chinese (translate from the source if needed). Every [SOPR] is ALWAYS English, telegraphic.
+14. Language: the translated user question and every <SAY> (opening, bridges, final) are ALWAYS English (translate from the source if needed). Every [SOPR] is ALWAYS English and telegraphic.
 15. Use `context` only to resolve references in `user` (e.g. "that time", "the previous result"); do not re-answer earlier turns.
 
 
@@ -165,17 +165,17 @@ markers, tool calls, or tool results.
 Return valid JSON ONLY, exactly this shape (no markdown, no commentary):
 
 {
-  "translated_user": "the user's question translated into natural Traditional Chinese (zh-TW)",
-  "first_say": "the opening speech chunk (2-3 short TTS-friendly sentences in Traditional Chinese)",
+  "translated_user": "the user's question translated into natural English",
+  "first_say": "the opening speech chunk (2-3 short TTS-friendly sentences in English)",
   "steps": [
     {
       "step_id": 0,
       "pre_tool_private_state": "private_state: compact inner state in English (20-60 words), explaining next action.",
-      "post_tool_say": "the bridging speech chunk spoken while this step's tool is executing (2-3 short TTS-friendly sentences in Traditional Chinese)"
+      "post_tool_say": "the bridging speech chunk spoken while this step's tool is executing (2-3 short TTS-friendly sentences in English)"
     }
   ],
   "final_private_state": "final reasoning synthesizing observations (20-60 words in English)",
-  "final_say": "the final speech chunk answering the user (Traditional Chinese)",
+  "final_say": "the final speech chunk answering the user (English)",
   "drop_reason": null
 }
 
@@ -186,9 +186,9 @@ Rules:
 - private_state must be compact, 20 to 60 words, in English.
 - steps[i].post_tool_say is spoken while step i's tool is still running: it must NOT reveal facts from step i's observation, but it MAY briefly reference results from steps before i, because those have already arrived.
 - final_private_state and final_say should synthesize the tool observations.
-- final_say must answer the user directly in natural spoken Traditional Chinese, summarizing the key point instead of directly translating every detail.
+- final_say must answer the user directly in natural spoken English, summarizing the key point instead of directly translating every detail.
 - No <SAY> field may contain Markdown, bullets, numbered-list formatting, headings, tables, blockquotes, inline code backticks, or emoji.
-- When listing multiple points in <SAY>, use natural spoken connectors like "首先", "接著", "再來", and "最後" instead of list markers.
+- When listing multiple points in <SAY>, use natural spoken connectors like "first", "next", "also", and "finally" instead of list markers.
 - If the trajectory is malformed, impossible to rewrite, or contains tool_steps that are clearly irrelevant or hallucinated relative to the current user request, set drop_reason and keep other fields empty.
 
 ## Mini example (illustrative only — copy the SHAPE and the causality discipline, not the content)
@@ -207,23 +207,23 @@ Input (abridged):
 Output:
 
 {
-  "translated_user": "幫我確認明天 AA100 航班是不是準點，如果準點的話，幫我訂一個靠走道的座位。",
-  "first_say": "好的，我先幫您確認明天 AA100 的航班狀態。如果一切準點，我就接著幫您安排靠走道的座位。",
+  "translated_user": "Check whether flight AA100 is on time tomorrow, and if it is, book me an aisle seat.",
+  "first_say": "Sure, I'll first check tomorrow's status for AA100. If it is on time, I'll then arrange an aisle seat for you.",
   "steps": [
     {
       "step_id": 0,
       "pre_tool_private_state": "User wants AA100 status for tomorrow, then an aisle seat only if on time. Booking is conditional, so verify status first via flight_status before touching book_seat.",
-      "post_tool_say": "我正在查 AA100 明天的即時狀態，請稍等我一下。確認結果一出來，我就告訴您後續怎麼安排。"
+      "post_tool_say": "I'm checking tomorrow's live status for AA100 now. Once it is confirmed, I'll let you know what happens next."
     },
     {
       "step_id": 1,
       "pre_tool_private_state": "flight_status: on_time, departs 09:15. Condition met, proceed to book aisle seat on AA100 via book_seat; report seat number once confirmed.",
-      "post_tool_say": "好消息，航班目前顯示準點出發。我現在就幫您劃靠走道的座位，馬上就好。"
+      "post_tool_say": "Good news, the flight is currently showing as on time. I'll arrange an aisle seat for you now."
     }
   ],
   "final_private_state": "AA100 on time, dep 09:15; booking ok, aisle seat 12C. Final answer covers both facts; no residual uncertainty.",
-  "final_say": "都幫您處理好了。AA100 明天準點起飛，出發時間是早上九點十五分，我也幫您訂到靠走道的 12C 座位，祝您旅途順利。",
+  "final_say": "Everything is taken care of. AA100 is on time for tomorrow with a 9:15 AM departure, and your aisle seat 12C is booked. Have a great trip.",
   "drop_reason": null
 }
 
-Note the causality: step 0's bridge never states the status because that result is still pending; step 1's bridge may say "準點" because step 0's result has already arrived, but never mentions seat 12C, which is still pending.
+Note the causality: step 0's bridge never states the status because that result is still pending; step 1's bridge may say "on time" because step 0's result has already arrived, but never mentions seat 12C, which is still pending.
